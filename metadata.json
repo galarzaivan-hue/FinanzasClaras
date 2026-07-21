@@ -1,0 +1,6 @@
+{
+  "name": "Finanzas Claras",
+  "description": "Un gestor de gastos personales ultra-sencillo para celular, enfocado en registrar egresos diarios y contrastarlos en tiempo real contra tus ingresos.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
