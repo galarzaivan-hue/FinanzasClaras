@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabaseClient';
 
 export default function Home() {
   // Estados para datos financieros
-  const [ingresoTotal, setIngresoTotal] = useState(1200);
+  const [ingresoTotal, setIngresoTotal] = useState(14000);
   const [gastos, setGastos] = useState([]);
   const [isEditingIngreso, setIsEditingIngreso] = useState(false);
   const [tempIngreso, setTempIngreso] = useState('');
@@ -25,6 +25,7 @@ export default function Home() {
 
   async function fetchData() {
     setIsLoading(true);
+    setErrorMessage('');
     try {
       // 1. Obtener transacciones
       const { data: transaccionesData, error: transaccionesError } = await supabase
@@ -35,23 +36,33 @@ export default function Home() {
       if (transaccionesError) throw transaccionesError;
       setGastos(transaccionesData || []);
 
-      // 2. Obtener perfil de ingresos (un solo registro id de ceros por simplicidad)
-      const { data: perfilData, error: perfilError } = await supabase
-        .from('perfil_ingresos')
-        .select('ingreso_total')
-        .single();
+      // 2. Obtener perfil de ingresos (presupuesto)
+      try {
+        const { data: perfilData, error: perfilError } = await supabase
+          .from('perfil_ingresos')
+          .select('ingreso_total')
+          .limit(1)
+          .maybeSingle();
 
-      if (!perfilError && perfilData) {
-        setIngresoTotal(Number(perfilData.ingreso_total));
-      } else if (perfilError && perfilError.code === 'PGRST116') {
-        // Si no existe, creamos el registro inicial
-        const defaultId = '00000000-0000-0000-0000-000000000000';
-        await supabase.from('perfil_ingresos').insert({ id: defaultId, ingreso_total: 1200 });
-        setIngresoTotal(1200);
+        if (!perfilError && perfilData && perfilData.ingreso_total !== undefined) {
+          setIngresoTotal(Number(perfilData.ingreso_total));
+        } else if (!perfilData) {
+          const defaultId = '00000000-0000-0000-0000-000000000000';
+          await supabase.from('perfil_ingresos').upsert({ id: defaultId, ingreso_total: 14000 }, { onConflict: 'id' });
+        }
+      } catch (perfilErr) {
+        console.warn('Error no crítico al consultar perfil_ingresos:', perfilErr);
       }
     } catch (error) {
-      console.error('Error cargando datos de Supabase:', error.message);
-      setErrorMessage('Error al conectar con Supabase. Asegúrate de configurar las variables de entorno.');
+      console.error('Error cargando datos de Supabase:', error);
+      const detailMsg = [
+        error.message || 'Error de conexión o permisos RLS',
+        error.details ? `Detalle: ${error.details}` : null,
+        error.hint ? `Pista: ${error.hint}` : null,
+        error.code ? `Código SQL: ${error.code}` : null
+      ].filter(Boolean).join(' | ');
+
+      setErrorMessage(`❌ Error de Supabase: ${detailMsg}`);
     } finally {
       setIsLoading(false);
     }
@@ -73,6 +84,7 @@ export default function Home() {
         monto: Number(monto),
         categoria,
         concepto: concepto.trim() || null,
+        tipo: 'gasto',
       };
 
       const { data, error } = await supabase
@@ -94,8 +106,16 @@ export default function Home() {
       setMonto('');
       setConcepto('');
     } catch (error) {
-      console.error('Error insertando gasto:', error.message);
-      setErrorMessage('No se pudo guardar el gasto en la base de datos.');
+      console.error('Error detallado de Supabase insertando gasto:', error);
+      const detailMsg = [
+        error.message || 'Error de conexión o permisos RLS',
+        error.details ? `Detalle: ${error.details}` : null,
+        error.hint ? `Pista: ${error.hint}` : null,
+        error.code ? `Código SQL: ${error.code}` : null
+      ].filter(Boolean).join(' | ');
+
+      setErrorMessage(`❌ Error de Supabase: ${detailMsg}`);
+      alert(`⚠️ Error de Conexión o Permisos en Supabase:\n\n${detailMsg}\n\nPor favor, verifica las credenciales de Supabase en .env.local o ejecuta el script SQL de permisos.`);
     } finally {
       setIsSubmitting(false);
     }
@@ -197,7 +217,7 @@ export default function Home() {
             <div>
               <p className="text-xs text-slate-400 uppercase tracking-wider font-medium">Saldo Disponible</p>
               <h2 className={`text-3xl font-mono font-bold mt-1 tracking-tight ${saldoDisponible >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                ${saldoDisponible.toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                Bs {saldoDisponible.toLocaleString('es-BO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </h2>
             </div>
 
@@ -256,7 +276,7 @@ export default function Home() {
                 </form>
               ) : (
                 <p className="text-lg font-mono font-bold text-white mt-0.5">
-                  ${ingresoTotal.toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+                  Bs {ingresoTotal.toLocaleString('es-BO', { minimumFractionDigits: 2 })}
                 </p>
               )}
             </div>
@@ -264,7 +284,7 @@ export default function Home() {
             <div>
               <p className="text-xs text-slate-400 uppercase tracking-wider font-medium">Gastado Total</p>
               <p className="text-lg font-mono font-bold text-rose-400 mt-0.5">
-                ${totalGastos.toLocaleString('es-MX', { minimumFractionDigits: 2 })}
+                Bs {totalGastos.toLocaleString('es-BO', { minimumFractionDigits: 2 })}
               </p>
             </div>
           </div>
@@ -279,9 +299,9 @@ export default function Home() {
           <form onSubmit={handleAddGasto} className="flex flex-col gap-4">
             {/* Input de Monto */}
             <div>
-              <label className="block text-[11px] text-slate-400 font-medium uppercase tracking-wider mb-1.5">Monto ($)*</label>
+              <label className="block text-[11px] text-slate-400 font-medium uppercase tracking-wider mb-1.5">Monto (Bs)*</label>
               <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-semibold text-xl">$</span>
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-base">Bs</span>
                 <input
                   type="number"
                   pattern="[0-9]*"
@@ -290,7 +310,7 @@ export default function Home() {
                   value={monto}
                   onChange={(e) => setMonto(e.target.value)}
                   placeholder="0.00"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl py-3 pl-9 pr-4 text-xl font-mono font-semibold focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 text-white placeholder-slate-700 transition-all"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl py-3 pl-12 pr-4 text-xl font-mono font-semibold focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 text-white placeholder-slate-700 transition-all"
                   required
                 />
               </div>
@@ -407,7 +427,7 @@ export default function Home() {
                   {/* Monto y Botón de Eliminar */}
                   <div className="flex items-center gap-3">
                     <span className="font-mono text-sm font-bold text-rose-400">
-                      -${Number(gasto.monto).toFixed(2)}
+                      -Bs {Number(gasto.monto).toFixed(2)}
                     </span>
                     
                     <button
