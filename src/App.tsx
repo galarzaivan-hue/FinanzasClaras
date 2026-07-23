@@ -333,13 +333,84 @@ export default function App() {
     setConcepto('');
   };
 
+  // Helper para escapar campos CSV
+  const escapeCsvField = (field: string | number) => {
+    const stringified = String(field ?? '');
+    if (stringified.includes(',') || stringified.includes('"') || stringified.includes('\n')) {
+      return `"${stringified.replace(/"/g, '""')}"`;
+    }
+    return stringified;
+  };
+
+  // Función para generar y descargar reporte CSV del ciclo
+  const generarYDescargarReporteCSV = (items: Transaccion[]) => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const fileName = `FinanzasClaras_Cierre_${year}-${month}.csv`;
+
+    const headers = ['Fecha y Hora', 'Categoría', 'Concepto / Nota', 'Monto en Bs', 'Estado'];
+    
+    const rows = items.map((t) => {
+      const info = infoCategorias[t.categoria as keyof typeof infoCategorias] || { icon: '💰' };
+      const catConEmoji = `${info.icon} ${t.categoria}`;
+      const fechaFormatted = new Date(t.creado_en).toLocaleString('es-BO', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+      
+      return [
+        escapeCsvField(fechaFormatted),
+        escapeCsvField(catConEmoji),
+        escapeCsvField(t.concepto || `Gasto en ${t.categoria}`),
+        escapeCsvField(Number(t.monto).toFixed(2)),
+        escapeCsvField('archivado')
+      ].join(',');
+    });
+
+    const totalGastos = items.reduce((sum, t) => sum + (Number(t.monto) || 0), 0);
+    const summaryRow = [
+      escapeCsvField('Suma Total de Gastos'),
+      '',
+      '',
+      escapeCsvField(totalGastos.toFixed(2)),
+      ''
+    ].join(',');
+
+    const csvContent = '\uFEFF' + [headers.join(','), ...rows, summaryRow].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', fileName);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   // Ejecutar el Cierre de Ciclo
   const handleCerrarCiclo = async () => {
     setIsClosingCycle(true);
     try {
+      // Capturar transacciones del ciclo actual para el reporte CSV
+      const transaccionesCiclo = [...transacciones];
+
+      // 1. Disparar la descarga automática del archivo .csv en el dispositivo
+      try {
+        generarYDescargarReporteCSV(transaccionesCiclo);
+      } catch (csvErr) {
+        console.error('Error al generar el reporte CSV:', csvErr);
+      }
+
       if (supabaseConnected) {
-        // 1. Actualizar transacciones activas a estado 'archivado' en Supabase
-        const activeIds = transacciones.map((t) => t.id);
+        // 2. Actualizar transacciones activas a estado 'archivado' en Supabase
+        const activeIds = transaccionesCiclo.map((t) => t.id);
         if (activeIds.length > 0) {
           try {
             const { error: updateErr } = await supabase
@@ -359,7 +430,7 @@ export default function App() {
           }
         }
 
-        // 2. Reiniciar perfil de ingresos a 14,000.00 Bs en Supabase
+        // 3. Reiniciar perfil de ingresos a 14,000.00 Bs en Supabase
         try {
           const defaultId = '00000000-0000-0000-0000-000000000000';
           await supabase
@@ -370,7 +441,7 @@ export default function App() {
         }
       }
 
-      // 3. Actualizar almacenamiento local
+      // 4. Actualizar almacenamiento local
       const savedTrans = localStorage.getItem('fc_transacciones');
       if (savedTrans) {
         try {
@@ -382,12 +453,13 @@ export default function App() {
         }
       }
 
-      // 4. Reiniciar vista principal (gastos a 0 y saldo a 14,000 Bs)
+      // 5. Reiniciar vista principal (gastos a 0 y saldo a 14,000 Bs)
       setTransacciones([]);
       setIngresoTotal(14000);
       localStorage.setItem('fc_ingreso_total', '14000');
 
-      triggerNotification('🔒 ¡Ciclo cerrado! Gastos archivados y saldo reiniciado a 14,000.00 Bs');
+      // 6. Notificación requerida
+      triggerNotification('¡Ciclo cerrado con éxito! Se descargó el reporte del mes.');
       setShowConfirmCerrarCiclo(false);
 
       // Si la pestaña de archivados está abierta, recargar los datos archivados
