@@ -22,7 +22,8 @@ import {
   Share2,
   RefreshCw,
   Lock,
-  Archive
+  Archive,
+  Download
 } from 'lucide-react';
 import { supabase } from './lib/supabaseClient';
 
@@ -58,6 +59,53 @@ export default function App() {
   const [showHistorialArchivado, setShowHistorialArchivado] = useState<boolean>(false);
   const [transaccionesArchivadas, setTransaccionesArchivadas] = useState<Transaccion[]>([]);
   const [loadingArchivados, setLoadingArchivados] = useState<boolean>(false);
+
+  // Estados para PWA Installation Prompt
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isAppInstalled, setIsAppInstalled] = useState<boolean>(false);
+
+  // Listener para capturar el evento 'beforeinstallprompt'
+  useEffect(() => {
+    // Verificar si ya está corriendo en modo Standalone (PWA instalada)
+    if (window.matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone) {
+      setIsAppInstalled(true);
+    }
+
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      (window as any).deferredPrompt = e;
+      setDeferredPrompt(e);
+      setIsAppInstalled(false);
+    };
+
+    const handleAppInstalled = () => {
+      setIsAppInstalled(true);
+      setDeferredPrompt(null);
+      (window as any).deferredPrompt = null;
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
+    };
+  }, []);
+
+  const handleInstallClick = () => {
+    const promptEvent = deferredPrompt || (window as any).deferredPrompt;
+    if (promptEvent) {
+      promptEvent.prompt();
+      promptEvent.userChoice.then((choiceResult: any) => {
+        if (choiceResult && choiceResult.outcome === 'accepted') {
+          setIsAppInstalled(true);
+          setDeferredPrompt(null);
+          (window as any).deferredPrompt = null;
+        }
+      });
+    }
+  };
 
   // Cargar datos de Supabase con fallback a localStorage
   useEffect(() => {
@@ -587,6 +635,33 @@ export default function App() {
             <span>● {checkingSupabase ? 'Verificando...' : supabaseConnected ? 'Supabase' : 'Modo Demo'}</span>
           </button>
         </header>
+
+        {/* BANNER / BOTÓN DE INSTALACIÓN DIRECTA PWA */}
+        {!isAppInstalled && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-slate-900/90 border border-emerald-500/30 rounded-2xl p-2.5 px-3.5 flex items-center justify-between gap-3 shadow-lg text-left"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center text-emerald-400 text-sm shrink-0">
+                📲
+              </div>
+              <div className="flex flex-col">
+                <span className="text-xs font-bold text-white leading-tight">Instalar FinanzasClaras</span>
+                <span className="text-[9px] text-slate-400">Usala como app nativa en Android e iOS</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleInstallClick}
+              className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold rounded-xl text-[11px] flex items-center gap-1.5 transition-all cursor-pointer shadow-md shadow-emerald-500/15 shrink-0 active:scale-95"
+            >
+              <Download className="h-3.5 w-3.5" />
+              <span>Instalar</span>
+            </button>
+          </motion.div>
+        )}
 
         {/* Alerta de Configuración SQL */}
         {supabaseErrorMsg && (
