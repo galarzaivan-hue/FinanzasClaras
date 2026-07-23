@@ -20,7 +20,9 @@ import {
   Layers,
   CheckCircle2,
   Share2,
-  RefreshCw
+  RefreshCw,
+  Lock,
+  Archive
 } from 'lucide-react';
 import { supabase } from './lib/supabaseClient';
 
@@ -30,6 +32,8 @@ interface Transaccion {
   monto: number;
   categoria: 'Comida' | 'Transporte' | 'Servicios' | 'Varios';
   concepto: string;
+  tipo?: string;
+  estado?: 'activo' | 'archivado' | string;
   creado_en: string;
 }
 
@@ -45,8 +49,15 @@ export default function App() {
     return saved ? Number(saved) : 14000;
   });
 
-  // Estado de lista de transacciones
+  // Estado de lista de transacciones activas
   const [transacciones, setTransacciones] = useState<Transaccion[]>([]);
+
+  // Estados para Cierre de Ciclo e Historial Archivado
+  const [showConfirmCerrarCiclo, setShowConfirmCerrarCiclo] = useState<boolean>(false);
+  const [isClosingCycle, setIsClosingCycle] = useState<boolean>(false);
+  const [showHistorialArchivado, setShowHistorialArchivado] = useState<boolean>(false);
+  const [transaccionesArchivadas, setTransaccionesArchivadas] = useState<Transaccion[]>([]);
+  const [loadingArchivados, setLoadingArchivados] = useState<boolean>(false);
 
   // Cargar datos de Supabase con fallback a localStorage
   useEffect(() => {
@@ -57,17 +68,29 @@ export default function App() {
     setCheckingSupabase(true);
     setSupabaseErrorMsg(null);
     try {
-      // 1. Intentar cargar transacciones
-      const { data: transData, error: transError } = await supabase
+      // 1. Intentar cargar transacciones activas (estado = 'activo' o nulo)
+      let activeTrans: Transaccion[] = [];
+      const { data: activeData, error: transError } = await supabase
         .from('transacciones')
         .select('*')
+        .or('estado.eq.activo,estado.is.null')
         .order('creado_en', { ascending: false });
 
-      if (transError) throw transError;
+      if (transError) {
+        // Fallback en caso de que la columna 'estado' aún no esté indexada o creada
+        const { data: fallbackData, error: fallbackError } = await supabase
+          .from('transacciones')
+          .select('*')
+          .order('creado_en', { ascending: false });
 
-      // Si las transacciones se leen con éxito, la conexión con Supabase está activa y las tablas existen
-      setTransacciones(transData || []);
-      localStorage.setItem('fc_transacciones', JSON.stringify(transData || []));
+        if (fallbackError) throw fallbackError;
+        activeTrans = (fallbackData || []).filter((t: any) => !t.estado || t.estado === 'activo');
+      } else {
+        activeTrans = activeData || [];
+      }
+
+      setTransacciones(activeTrans);
+      localStorage.setItem('fc_transacciones', JSON.stringify(activeTrans));
 
       // 2. Intentar cargar perfil de ingresos (presupuesto)
       try {
@@ -122,22 +145,62 @@ export default function App() {
       const savedTrans = localStorage.getItem('fc_transacciones');
       if (savedTrans) {
         try {
-          setTransacciones(JSON.parse(savedTrans));
+          const parsed: Transaccion[] = JSON.parse(savedTrans);
+          const activeOnly = parsed.filter((t) => !t.estado || t.estado === 'activo');
+          setTransacciones(activeOnly);
         } catch (e) {
           setTransacciones([]);
         }
       } else {
         // Datos de demostración iniciales
         const mockData: Transaccion[] = [
-          { id: '1', monto: 12.50, categoria: 'Comida', concepto: 'Café de la mañana', creado_en: new Date(Date.now() - 3600000).toISOString() },
-          { id: '2', monto: 45.00, categoria: 'Servicios', concepto: 'Suscripción de streaming', creado_en: new Date(Date.now() - 14400000).toISOString() },
-          { id: '3', monto: 15.00, categoria: 'Transporte', concepto: 'Viaje en metro/bus', creado_en: new Date(Date.now() - 86400000).toISOString() }
+          { id: '1', monto: 12.50, categoria: 'Comida', concepto: 'Café de la mañana', estado: 'activo', creado_en: new Date(Date.now() - 3600000).toISOString() },
+          { id: '2', monto: 45.00, categoria: 'Servicios', concepto: 'Suscripción de streaming', estado: 'activo', creado_en: new Date(Date.now() - 14400000).toISOString() },
+          { id: '3', monto: 15.00, categoria: 'Transporte', concepto: 'Viaje en metro/bus', estado: 'activo', creado_en: new Date(Date.now() - 86400000).toISOString() }
         ];
         setTransacciones(mockData);
         localStorage.setItem('fc_transacciones', JSON.stringify(mockData));
       }
     } finally {
       setCheckingSupabase(false);
+    }
+  };
+
+  // Cargar historial de gastos archivados
+  const loadArchivadoData = async () => {
+    setLoadingArchivados(true);
+    try {
+      if (supabaseConnected) {
+        const { data, error } = await supabase
+          .from('transacciones')
+          .select('*')
+          .eq('estado', 'archivado')
+          .order('creado_en', { ascending: false });
+
+        if (error) throw error;
+        setTransaccionesArchivadas(data || []);
+      } else {
+        const savedTrans = localStorage.getItem('fc_transacciones');
+        if (savedTrans) {
+          const parsed: Transaccion[] = JSON.parse(savedTrans);
+          setTransaccionesArchivadas(parsed.filter((t) => t.estado === 'archivado'));
+        } else {
+          setTransaccionesArchivadas([]);
+        }
+      }
+    } catch (err) {
+      console.error('Error cargando historial archivado:', err);
+      const savedTrans = localStorage.getItem('fc_transacciones');
+      if (savedTrans) {
+        try {
+          const parsed: Transaccion[] = JSON.parse(savedTrans);
+          setTransaccionesArchivadas(parsed.filter((t) => t.estado === 'archivado'));
+        } catch (e) {
+          setTransaccionesArchivadas([]);
+        }
+      }
+    } finally {
+      setLoadingArchivados(false);
     }
   };
 
@@ -185,24 +248,48 @@ export default function App() {
       return;
     }
 
-    const nuevoGasto = {
+    const conceptoLimpio = concepto.trim() || `Gasto en ${categoria}`;
+    const nuevoGastoConEstado = {
       monto: valMonto,
       categoria,
-      concepto: concepto.trim() || `Gasto en ${categoria}`,
-      tipo: 'gasto'
+      concepto: conceptoLimpio,
+      tipo: 'gasto',
+      estado: 'activo'
     };
 
     if (supabaseConnected) {
       try {
-        const { data, error } = await supabase
+        // Intentar inserción con todas las columnas (incluyendo tipo y estado)
+        let { data, error } = await supabase
           .from('transacciones')
-          .insert([nuevoGasto])
+          .insert([nuevoGastoConEstado])
           .select();
 
+        // Si falla por columna 'estado' o 'tipo' no existente en la tabla de Supabase del usuario, reintentamos con la estructura básica
+        if (error && (error.message?.includes('estado') || error.message?.includes('tipo') || error.message?.includes('schema cache') || error.code === 'PGRST204' || error.code === '42703')) {
+          console.warn('Columna estado/tipo no encontrada en Supabase, reintentando inserción básica...');
+          const gastoBasico = {
+            monto: valMonto,
+            categoria,
+            concepto: conceptoLimpio
+          };
+          const retryRes = await supabase
+            .from('transacciones')
+            .insert([gastoBasico])
+            .select();
+
+          data = retryRes.data;
+          error = retryRes.error;
+        }
+
         if (error) throw error;
-        
+
         if (data && data[0]) {
-          setTransacciones((prev) => [data[0], ...prev]);
+          const itemInsertado: Transaccion = {
+            ...data[0],
+            estado: data[0].estado || 'activo'
+          };
+          setTransacciones((prev) => [itemInsertado, ...prev]);
           triggerNotification('⚡ Gasto guardado en Supabase Cloud!');
         } else {
           loadSupabaseData();
@@ -213,14 +300,17 @@ export default function App() {
         const errDetails = err?.details ? ` (${err.details})` : '';
         const errCode = err?.code ? ` [Código: ${err.code}]` : '';
         const detailMsg = `${errMsg}${errDetails}${errCode}`;
-        
+
         triggerNotification(`⚠️ Error Supabase. Guardado local.`);
-        alert(`⚠️ Error de Conexión o Permisos en Supabase:\n\n${detailMsg}\n\nPor favor, verifica las credenciales de Supabase o ejecuta el script SQL de permisos.`);
-        
+        alert(`⚠️ Error de Conexión o Permisos en Supabase:\n\n${detailMsg}\n\nSi aún no has agregado la columna 'estado' en Supabase, puedes ejecutar esta línea en el Editor SQL:\nALTER TABLE transacciones ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'activo';`);
+
         // Guardado local fallback
         const localTx: Transaccion = {
           id: crypto.randomUUID(),
-          ...nuevoGasto,
+          monto: valMonto,
+          categoria,
+          concepto: conceptoLimpio,
+          estado: 'activo',
           creado_en: new Date().toISOString()
         };
         setTransacciones((prev) => [localTx, ...prev]);
@@ -229,7 +319,10 @@ export default function App() {
       // Local Only
       const localTx: Transaccion = {
         id: crypto.randomUUID(),
-        ...nuevoGasto,
+        monto: valMonto,
+        categoria,
+        concepto: conceptoLimpio,
+        estado: 'activo',
         creado_en: new Date().toISOString()
       };
       setTransacciones((prev) => [localTx, ...prev]);
@@ -238,6 +331,75 @@ export default function App() {
 
     setMonto('');
     setConcepto('');
+  };
+
+  // Ejecutar el Cierre de Ciclo
+  const handleCerrarCiclo = async () => {
+    setIsClosingCycle(true);
+    try {
+      if (supabaseConnected) {
+        // 1. Actualizar transacciones activas a estado 'archivado' en Supabase
+        const activeIds = transacciones.map((t) => t.id);
+        if (activeIds.length > 0) {
+          try {
+            const { error: updateErr } = await supabase
+              .from('transacciones')
+              .update({ estado: 'archivado' })
+              .in('id', activeIds);
+
+            if (updateErr) {
+              console.warn('No se pudo actualizar estado en Supabase, reintentando por filtro:', updateErr);
+              await supabase
+                .from('transacciones')
+                .update({ estado: 'archivado' })
+                .or('estado.eq.activo,estado.is.null');
+            }
+          } catch (e) {
+            console.warn('Excepción al actualizar estado en Supabase:', e);
+          }
+        }
+
+        // 2. Reiniciar perfil de ingresos a 14,000.00 Bs en Supabase
+        try {
+          const defaultId = '00000000-0000-0000-0000-000000000000';
+          await supabase
+            .from('perfil_ingresos')
+            .upsert({ id: defaultId, ingreso_total: 14000, updated_at: new Date().toISOString() });
+        } catch (e) {
+          console.warn('Error al actualizar perfil_ingresos en Supabase:', e);
+        }
+      }
+
+      // 3. Actualizar almacenamiento local
+      const savedTrans = localStorage.getItem('fc_transacciones');
+      if (savedTrans) {
+        try {
+          const parsed: Transaccion[] = JSON.parse(savedTrans);
+          const updated = parsed.map((t) => ({ ...t, estado: 'archivado' }));
+          localStorage.setItem('fc_transacciones', JSON.stringify(updated));
+        } catch (e) {
+          localStorage.setItem('fc_transacciones', JSON.stringify([]));
+        }
+      }
+
+      // 4. Reiniciar vista principal (gastos a 0 y saldo a 14,000 Bs)
+      setTransacciones([]);
+      setIngresoTotal(14000);
+      localStorage.setItem('fc_ingreso_total', '14000');
+
+      triggerNotification('🔒 ¡Ciclo cerrado! Gastos archivados y saldo reiniciado a 14,000.00 Bs');
+      setShowConfirmCerrarCiclo(false);
+
+      // Si la pestaña de archivados está abierta, recargar los datos archivados
+      if (showHistorialArchivado) {
+        loadArchivadoData();
+      }
+    } catch (err: any) {
+      console.error('Error al cerrar ciclo:', err);
+      triggerNotification('⚠️ No se pudo cerrar el ciclo completamente.');
+    } finally {
+      setIsClosingCycle(false);
+    }
   };
 
   // Eliminar transacción
@@ -553,11 +715,11 @@ export default function App() {
           </form>
         </div>
 
-        {/* 3. HISTORIAL DE GASTOS */}
+        {/* 3. HISTORIAL DE GASTOS DEL CICLO ACTUAL */}
         <div className="flex flex-col text-left min-h-[160px]">
           <div className="flex justify-between items-center mb-3">
             <h3 className="text-xs font-extrabold text-white uppercase tracking-wider flex items-center gap-1.5">
-              <span>📋</span> Historial Reciente
+              <span>📋</span> Gastos del Ciclo Actual
             </h3>
             <span className="text-[9px] bg-slate-900 border border-slate-850 px-2 py-0.5 rounded-full text-slate-400 font-mono">
               {transacciones.length} items
@@ -567,58 +729,198 @@ export default function App() {
           {transacciones.length === 0 ? (
             <div className="bg-slate-900/30 border border-dashed border-slate-800/80 rounded-2xl flex flex-col items-center justify-center p-6 text-slate-500 text-center gap-1.5 min-h-[120px]">
               <span className="text-xl">☕</span>
-              <p className="text-[10px] font-bold text-slate-400">Sin egresos hoy</p>
-              <p className="text-[9px] text-slate-500 max-w-[200px]">¡Buen trabajo manteniendo tu dinero intacto!</p>
+              <p className="text-[10px] font-bold text-slate-400">Sin egresos en este ciclo</p>
+              <p className="text-[9px] text-slate-500 max-w-[200px]">¡Buen trabajo manteniendo tu presupuesto intacto!</p>
             </div>
           ) : (
-            <div className="flex flex-col gap-2 overflow-y-auto max-h-[320px] pr-0.5 scrollbar-thin">
-              <AnimatePresence initial={false}>
-                {transacciones.map((t) => {
-                  const info = infoCategorias[t.categoria] || { icon: '💰', bg: 'bg-slate-850' };
-                  return (
-                    <motion.div
-                      key={t.id}
-                      initial={{ opacity: 0, height: 0, y: -10 }}
-                      animate={{ opacity: 1, height: 'auto', y: 0 }}
-                      exit={{ opacity: 0, height: 0, y: 10 }}
-                      transition={{ duration: 0.2 }}
-                      className="bg-slate-950 border border-slate-900 rounded-xl p-2.5 flex items-center justify-between hover:border-slate-800 transition-all"
-                    >
-                      <div className="flex items-center gap-2.5">
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${info.bg}`}>
-                          <span className="text-sm">{info.icon}</span>
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-2 overflow-y-auto max-h-[320px] pr-0.5 scrollbar-thin">
+                <AnimatePresence initial={false}>
+                  {transacciones.map((t) => {
+                    const info = infoCategorias[t.categoria] || { icon: '💰', bg: 'bg-slate-850' };
+                    return (
+                      <motion.div
+                        key={t.id}
+                        initial={{ opacity: 0, height: 0, y: -10 }}
+                        animate={{ opacity: 1, height: 'auto', y: 0 }}
+                        exit={{ opacity: 0, height: 0, y: 10 }}
+                        transition={{ duration: 0.2 }}
+                        className="bg-slate-950 border border-slate-900 rounded-xl p-2.5 flex items-center justify-between hover:border-slate-800 transition-all"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${info.bg}`}>
+                            <span className="text-sm">{info.icon}</span>
+                          </div>
+                          <div className="flex flex-col">
+                            <span className="text-[11px] font-bold text-white line-clamp-1">
+                              {t.concepto}
+                            </span>
+                            <span className="text-[8px] text-slate-500 uppercase mt-0.5 font-semibold">
+                              {t.categoria} • {new Date(t.creado_en).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
                         </div>
-                        <div className="flex flex-col">
-                          <span className="text-[11px] font-bold text-white line-clamp-1">
-                            {t.concepto}
-                          </span>
-                          <span className="text-[8px] text-slate-500 uppercase mt-0.5 font-semibold">
-                            {t.categoria} • {new Date(t.creado_en).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
-                          </span>
-                        </div>
-                      </div>
 
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className="font-mono text-xs font-bold text-rose-400">
-                          -Bs {t.monto.toFixed(2)}
-                        </span>
-                        <button
-                          onClick={() => handleDeleteGasto(t.id)}
-                          className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-md transition-all cursor-pointer"
-                          title="Eliminar"
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    </motion.div>
-                  );
-                })}
-              </AnimatePresence>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="font-mono text-xs font-bold text-rose-400">
+                            -Bs {t.monto.toFixed(2)}
+                          </span>
+                          <button
+                            onClick={() => handleDeleteGasto(t.id)}
+                            className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-md transition-all cursor-pointer"
+                            title="Eliminar"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </AnimatePresence>
+              </div>
+
+              {/* Botón "🔒 Cerrar Ciclo" al final del historial de gastos actual */}
+              <button
+                type="button"
+                onClick={() => setShowConfirmCerrarCiclo(true)}
+                className="mt-2 w-full py-2.5 px-3 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/25 text-rose-300 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-[0.98]"
+              >
+                <Lock className="h-3.5 w-3.5 text-rose-400" />
+                <span>🔒 Cerrar Ciclo</span>
+              </button>
             </div>
           )}
         </div>
 
+        {/* 4. SECCIÓN / PESTAÑA: HISTORIAL DE GASTOS ARCHIVADOS */}
+        <div className="flex flex-col gap-2 pt-2 border-t border-slate-800/60 text-left">
+          <button
+            type="button"
+            onClick={() => {
+              const nextState = !showHistorialArchivado;
+              setShowHistorialArchivado(nextState);
+              if (nextState) {
+                loadArchivadoData();
+              }
+            }}
+            className="w-full py-3 px-4 bg-slate-900/90 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-300 text-xs font-bold flex items-center justify-between transition-all cursor-pointer shadow-sm"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-sm">📁</span>
+              <span>Ver Historial de gastos</span>
+            </div>
+            <ChevronRight className={`h-4 w-4 text-slate-400 transition-transform duration-200 ${showHistorialArchivado ? 'rotate-90' : ''}`} />
+          </button>
+
+          <AnimatePresence>
+            {showHistorialArchivado && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 flex flex-col gap-3"
+              >
+                <div className="flex justify-between items-center border-b border-slate-800 pb-2">
+                  <span className="text-xs font-extrabold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <span>📦</span> Historial Archivados
+                  </span>
+                  <button
+                    type="button"
+                    onClick={loadArchivadoData}
+                    disabled={loadingArchivados}
+                    className="text-[10px] text-slate-400 hover:text-emerald-400 flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    <RefreshCw className={`h-3 w-3 ${loadingArchivados ? 'animate-spin' : ''}`} />
+                    <span>Actualizar</span>
+                  </button>
+                </div>
+
+                {loadingArchivados ? (
+                  <p className="text-xs text-slate-400 py-3 text-center font-mono">Cargando gastos archivados...</p>
+                ) : transaccionesArchivadas.length === 0 ? (
+                  <div className="py-4 text-center text-slate-500 text-xs">
+                    <p className="font-semibold text-slate-400">Sin gastos archivados aún</p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">Al presionar "Cerrar Ciclo", los gastos completados pasarán a este historial de solo lectura.</p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2 max-h-[280px] overflow-y-auto pr-0.5 scrollbar-thin">
+                    {transaccionesArchivadas.map((t) => {
+                      const info = infoCategorias[t.categoria as keyof typeof infoCategorias] || { icon: '💰', bg: 'bg-slate-850' };
+                      return (
+                        <div
+                          key={t.id}
+                          className="bg-slate-950/80 border border-slate-900 rounded-xl p-2.5 flex items-center justify-between text-xs"
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${info.bg}`}>
+                              <span className="text-xs">{info.icon}</span>
+                            </div>
+                            <div className="flex flex-col">
+                              <span className="font-bold text-white line-clamp-1">{t.concepto}</span>
+                              <span className="text-[8px] text-slate-500 uppercase mt-0.5 font-semibold">
+                                {t.categoria} • {new Date(t.creado_en).toLocaleDateString('es-BO', { day: '2-digit', month: 'short', year: 'numeric' })}
+                              </span>
+                            </div>
+                          </div>
+                          <span className="font-mono font-bold text-slate-400 shrink-0">
+                            -Bs {t.monto.toFixed(2)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
       </main>
+
+      {/* MODAL CONFIRMACIÓN PARA CERRAR CICLO */}
+      <AnimatePresence>
+        {showConfirmCerrarCiclo && (
+          <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="bg-slate-900 border border-slate-800 p-5 rounded-2xl max-w-sm w-full text-left flex flex-col gap-3 shadow-2xl"
+            >
+              <div className="flex items-center gap-2 text-rose-400 font-extrabold text-sm">
+                <Lock className="h-4 w-4" />
+                <h3>¿Cerrar Ciclo Financiero?</h3>
+              </div>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                ¿Deseas cerrar el ciclo actual y reiniciar tu saldo? Todos los gastos registrados cambiarán su estado a <strong className="text-amber-300">archivado</strong> y el Saldo Disponible se reiniciará a <strong className="text-emerald-400">14,000.00 Bs</strong>.
+              </p>
+              <div className="flex gap-2 pt-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmCerrarCiclo(false)}
+                  disabled={isClosingCycle}
+                  className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold cursor-pointer transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCerrarCiclo}
+                  disabled={isClosingCycle}
+                  className="px-4 py-2 bg-rose-500 hover:bg-rose-400 text-slate-950 rounded-xl text-xs font-bold cursor-pointer transition-all flex items-center gap-1.5 shadow-md shadow-rose-500/10"
+                >
+                  {isClosingCycle ? (
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <span>Sí, Cerrar Ciclo</span>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
     </div>
   );

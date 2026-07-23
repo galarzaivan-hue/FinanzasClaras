@@ -22,14 +22,17 @@ CREATE TABLE IF NOT EXISTS transacciones (
   categoria VARCHAR(50) NOT NULL CHECK (categoria IN ('Comida', 'Transporte', 'Servicios', 'Varios')),
   concepto VARCHAR(150),
   tipo VARCHAR(20) DEFAULT 'gasto' NOT NULL,
+  estado VARCHAR(20) DEFAULT 'activo' NOT NULL,
   creado_en TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()) NOT NULL
 );
 
--- Sentencia de actualización en caso de que la tabla ya exista pero no tenga la columna 'tipo':
+-- Sentencia de actualización en caso de que la tabla ya exista pero no tenga las columnas 'tipo' o 'estado':
 ALTER TABLE transacciones ADD COLUMN IF NOT EXISTS tipo VARCHAR(20) DEFAULT 'gasto';
+ALTER TABLE transacciones ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'activo';
 
 -- Índices para optimizar la velocidad de lectura en orden descendente
 CREATE INDEX IF NOT EXISTS idx_transacciones_creado_en ON transacciones (creado_en DESC);
+CREATE INDEX IF NOT EXISTS idx_transacciones_estado ON transacciones (estado);
 
 -- =========================================================
 -- CONFIGURACIÓN DE SEGURIDAD (ROW LEVEL SECURITY - RLS)

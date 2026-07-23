@@ -27,14 +27,27 @@ export default function Home() {
     setIsLoading(true);
     setErrorMessage('');
     try {
-      // 1. Obtener transacciones
+      // 1. Obtener transacciones activas (estado = 'activo' o null)
+      let activeTrans = [];
       const { data: transaccionesData, error: transaccionesError } = await supabase
         .from('transacciones')
         .select('*')
+        .or('estado.eq.activo,estado.is.null')
         .order('creado_en', { ascending: false });
 
-      if (transaccionesError) throw transaccionesError;
-      setGastos(transaccionesData || []);
+      if (transaccionesError) {
+        // Fallback si la sintaxis del or falla o no existe la columna
+        const { data: fallbackData, error: fallbackError } = await supabase
+          .from('transacciones')
+          .select('*')
+          .order('creado_en', { ascending: false });
+        if (fallbackError) throw fallbackError;
+        activeTrans = (fallbackData || []).filter((t) => !t.estado || t.estado === 'activo');
+      } else {
+        activeTrans = transaccionesData || [];
+      }
+
+      setGastos(activeTrans);
 
       // 2. Obtener perfil de ingresos (presupuesto)
       try {
@@ -85,6 +98,7 @@ export default function Home() {
         categoria,
         concepto: concepto.trim() || null,
         tipo: 'gasto',
+        estado: 'activo',
       };
 
       const { data, error } = await supabase
