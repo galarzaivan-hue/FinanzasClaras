@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Wallet, Mail, Lock, LogIn, UserPlus, Sparkles, AlertCircle, ArrowRight, ShieldCheck } from 'lucide-react';
+import { Wallet, Mail, Lock, LogIn, UserPlus, AlertCircle, ArrowRight, ShieldCheck, CheckCircle2 } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 
 interface AuthScreenProps {
@@ -24,20 +24,20 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
 
     const cleanEmail = email.trim();
     if (!cleanEmail || !password) {
-      setErrorMessage('Por favor, ingresa tu correo y contraseña.');
+      setErrorMessage('Por favor, ingresa tu correo electrónico y contraseña.');
       setLoading(false);
       return;
     }
 
     if (password.length < 6) {
-      setErrorMessage('La contraseña debe tener al menos 6 caracteres.');
+      setErrorMessage('La contraseña debe contener al menos 6 caracteres.');
       setLoading(false);
       return;
     }
 
     try {
       if (isLogin) {
-        // Iniciar Sesión con Email/Password
+        // Iniciar Sesión con Email y Contraseña
         const { data, error } = await supabase.auth.signInWithPassword({
           email: cleanEmail,
           password,
@@ -46,11 +46,11 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
         if (error) throw error;
 
         if (data.session) {
-          setSuccessMessage('¡Bienvenido de nuevo!');
+          setSuccessMessage('¡Inicio de sesión exitoso! Accediendo...');
           onAuthSuccess();
         }
       } else {
-        // Registro de Nuevo Usuario
+        // Registro de Nuevo Usuario con Email y Contraseña
         const { data, error } = await supabase.auth.signUp({
           email: cleanEmail,
           password,
@@ -59,52 +59,40 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
         if (error) throw error;
 
         if (data.session) {
-          setSuccessMessage('¡Cuenta creada exitosamente!');
+          setSuccessMessage('¡Cuenta creada e iniciada con éxito!');
           onAuthSuccess();
         } else if (data.user && !data.session) {
-          // Si Supabase requiere confirmación por email
-          setSuccessMessage('¡Registro completado! Si tu proyecto requiere confirmación por correo, revisa tu bandeja de entrada.');
+          // Caso en que el proyecto Supabase tenga activado "Confirm email"
+          setSuccessMessage('¡Registro completado! Revisa tu bandeja de entrada si tu proyecto requiere confirmación por correo.');
         } else {
           onAuthSuccess();
         }
       }
     } catch (err: any) {
       console.error('Error en autenticación:', err);
-      let message = err?.message || 'Error al procesar la autenticación.';
+      let message = err?.message || 'Ocurrió un error al procesar tu solicitud.';
+      
       if (message.includes('Invalid login credentials')) {
-        message = 'Correo o contraseña incorrectos. Verifica tus datos o crea una cuenta.';
+        message = 'Correo o contraseña incorrectos. Verifica tus datos o regístrate si aún no tienes cuenta.';
       } else if (message.includes('User already registered')) {
-        message = 'Este correo ya está registrado. Selecciona "Iniciar Sesión".';
+        message = 'Este correo electrónico ya está registrado. Selecciona "Iniciar Sesión".';
       } else if (message.includes('Email not confirmed')) {
-        message = 'Correo no confirmado. Revisa tu bandeja de entrada o desactiva "Confirm email" en Supabase.';
+        message = 'Correo no confirmado. Revisa tu bandeja de entrada o desactiva la opción "Confirm email" en Supabase Auth.';
+      } else if (message.includes('Password should be at least')) {
+        message = 'La contraseña debe tener al menos 6 caracteres.';
+      } else if (message.includes('signup disabled')) {
+        message = 'El registro de usuarios está deshabilitado temporalmente en Supabase.';
       }
+      
       setErrorMessage(message);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleGoogleSignIn = async () => {
-    setErrorMessage(null);
-    setLoading(true);
-    try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: window.location.origin,
-        },
-      });
-      if (error) throw error;
-    } catch (err: any) {
-      console.error('Error con Google Auth:', err);
-      setErrorMessage(err?.message || 'No se pudo iniciar sesión con Google.');
-      setLoading(false);
-    }
-  };
-
   return (
     <div className="min-h-screen bg-[#0F172A] text-[#f3f4f6] flex flex-col items-center justify-center p-4 relative overflow-hidden selection:bg-emerald-500 selection:text-slate-950">
-      {/* Luces de fondo */}
+      {/* Luces ambientales de fondo */}
       <div className="absolute top-[-20%] left-[-10%] w-[450px] h-[450px] bg-emerald-500/10 rounded-full blur-[130px] pointer-events-none"></div>
       <div className="absolute bottom-[-15%] right-[-10%] w-[400px] h-[400px] bg-indigo-500/10 rounded-full blur-[130px] pointer-events-none"></div>
 
@@ -161,7 +149,7 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
           </button>
         </div>
 
-        {/* Mensajes de Estado */}
+        {/* Mensajes de Error */}
         {errorMessage && (
           <motion.div
             initial={{ opacity: 0, y: -6 }}
@@ -173,55 +161,22 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
           </motion.div>
         )}
 
+        {/* Mensajes de Éxito */}
         {successMessage && (
           <motion.div
             initial={{ opacity: 0, y: -6 }}
             animate={{ opacity: 1, y: 0 }}
             className="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs flex items-start gap-2"
           >
-            <ShieldCheck className="h-4 w-4 shrink-0 mt-0.5" />
+            <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
             <span className="leading-tight">{successMessage}</span>
           </motion.div>
         )}
 
-        {/* Botón de Google OAuth */}
-        <button
-          type="button"
-          onClick={handleGoogleSignIn}
-          disabled={loading}
-          className="w-full py-2.5 px-4 bg-slate-950 hover:bg-slate-800/90 border border-slate-800 rounded-xl text-xs font-bold text-slate-200 flex items-center justify-center gap-2.5 transition-all cursor-pointer shadow-sm active:scale-[0.99] mb-4"
-        >
-          <svg className="w-4 h-4" viewBox="0 0 24 24">
-            <path
-              fill="#EA4335"
-              d="M12 5c1.6 0 3 .6 4.1 1.6l3.1-3.1C17.3 1.7 14.8 1 12 1 7.4 1 3.5 3.6 1.6 7.4l3.7 2.9C6.2 7.4 8.9 5 12 5z"
-            />
-            <path
-              fill="#4285F4"
-              d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5c-.3 1.5-1.1 2.8-2.4 3.7l3.7 2.9c2.2-2 3.7-5 3.7-8.8z"
-            />
-            <path
-              fill="#FBBC05"
-              d="M5.3 14.7c-.2-.7-.4-1.5-.4-2.3s.2-1.6.4-2.3L1.6 7.2C.6 9.2 0 11.5 0 14s.6 4.8 1.6 6.8l3.7-2.9z"
-            />
-            <path
-              fill="#34A853"
-              d="M12 23c3.2 0 6-1.1 8-3l-3.7-2.9c-1.1.7-2.5 1.2-4.3 1.2-3.1 0-5.8-2.1-6.7-5.1L1.6 16.1C3.5 19.9 7.4 23 12 23z"
-            />
-          </svg>
-          <span>Continuar con Google</span>
-        </button>
-
-        <div className="flex items-center gap-3 my-4">
-          <div className="flex-1 h-px bg-slate-800"></div>
-          <span className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">o con correo</span>
-          <div className="flex-1 h-px bg-slate-800"></div>
-        </div>
-
-        {/* Formulario de Email / Password */}
-        <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+        {/* Formulario Tradicional de Email / Contraseña */}
+        <form onSubmit={handleSubmit} className="flex flex-col gap-3.5">
           <div>
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
               Correo Electrónico
             </label>
             <div className="relative">
@@ -232,13 +187,14 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="tu@correo.com"
                 required
+                autoComplete="email"
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2.5 pl-9 pr-3 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 transition-colors"
               />
             </div>
           </div>
 
           <div>
-            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+            <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">
               Contraseña
             </label>
             <div className="relative">
@@ -247,9 +203,10 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder="Mínimo 6 caracteres"
                 required
                 minLength={6}
+                autoComplete={isLogin ? "current-password" : "new-password"}
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2.5 pl-9 pr-3 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 transition-colors"
               />
             </div>
@@ -261,15 +218,15 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
             className="w-full mt-2 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/15 transition-all cursor-pointer active:scale-[0.98] disabled:opacity-50"
           >
             {loading ? (
-              <span>Cargando...</span>
+              <span>Procesando...</span>
             ) : isLogin ? (
               <>
-                <LogIn className="h-4 w-4" />
+                <LogIn className="h-4 w-4 stroke-[2.5]" />
                 <span>INICIAR SESIÓN</span>
               </>
             ) : (
               <>
-                <UserPlus className="h-4 w-4" />
+                <UserPlus className="h-4 w-4 stroke-[2.5]" />
                 <span>CREAR CUENTA PRIVADA</span>
               </>
             )}
