@@ -4,51 +4,37 @@ import {
   Wallet, 
   Plus, 
   Trash2, 
-  Settings, 
   Check, 
   X, 
-  FileCode, 
   Database, 
-  Smartphone, 
   ChevronRight, 
-  Copy, 
-  TrendingUp, 
-  TrendingDown, 
-  Sparkles,
-  Info,
-  Calendar,
-  Layers,
-  CheckCircle2,
-  Share2,
+  Lock, 
+  Download,
   RefreshCw,
-  Lock,
-  Archive,
-  Download
+  LogOut,
+  User,
+  Shield,
+  HelpCircle
 } from 'lucide-react';
 import { supabase } from './lib/supabaseClient';
-
-// Interfaces para tipado estricto
-interface Transaccion {
-  id: string;
-  monto: number;
-  categoria: 'Comida' | 'Transporte' | 'Servicios' | 'Varios';
-  concepto: string;
-  tipo?: string;
-  estado?: 'activo' | 'archivado' | string;
-  creado_en: string;
-}
+import { Transaccion, CategoriaType } from './types';
+import AuthScreen from './components/AuthScreen';
+import SqlInstructionsModal from './components/SqlInstructionsModal';
 
 export default function App() {
-  // Estado para verificar y habilitar conexión a Supabase Cloud real
+  // Estados de Autenticación de Supabase
+  const [user, setUser] = useState<any>(null);
+  const [authChecking, setAuthChecking] = useState<boolean>(true);
+  const [isGuestMode, setIsGuestMode] = useState<boolean>(false);
+
+  // Estados de Conexión a Supabase Cloud
   const [supabaseConnected, setSupabaseConnected] = useState<boolean>(false);
-  const [checkingSupabase, setCheckingSupabase] = useState<boolean>(true);
+  const [checkingSupabase, setCheckingSupabase] = useState<boolean>(false);
   const [supabaseErrorMsg, setSupabaseErrorMsg] = useState<string | null>(null);
+  const [showSqlModal, setShowSqlModal] = useState<boolean>(false);
 
   // Estado de presupuesto/ingreso total
-  const [ingresoTotal, setIngresoTotal] = useState<number>(() => {
-    const saved = localStorage.getItem('fc_ingreso_total');
-    return saved ? Number(saved) : 14000;
-  });
+  const [ingresoTotal, setIngresoTotal] = useState<number>(14000);
 
   // Estado de lista de transacciones activas
   const [transacciones, setTransacciones] = useState<Transaccion[]>([]);
@@ -64,9 +50,62 @@ export default function App() {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isAppInstalled, setIsAppInstalled] = useState<boolean>(false);
 
-  // Listener para capturar el evento 'beforeinstallprompt'
+  // Estados del formulario y UI
+  const [monto, setMonto] = useState<string>('');
+  const [categoria, setCategoria] = useState<CategoriaType>('Comida');
+  const [concepto, setConcepto] = useState<string>('');
+  const [isEditingIngreso, setIsEditingIngreso] = useState<boolean>(false);
+  const [tempIngreso, setTempIngreso] = useState<string>('');
+  const [showNotification, setShowNotification] = useState<string | null>(null);
+
+  // Disparar notificaciones flotantes de feedback
+  const triggerNotification = (message: string) => {
+    setShowNotification(message);
+    setTimeout(() => setShowNotification(null), 3500);
+  };
+
+  // 1. Inicialización y Listener de Supabase Auth
   useEffect(() => {
-    // Verificar si ya está corriendo en modo Standalone (PWA instalada)
+    let mounted = true;
+
+    async function initAuth() {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (mounted) {
+          if (session?.user) {
+            setUser(session.user);
+            loadUserData(session.user);
+          } else {
+            setUser(null);
+          }
+        }
+      } catch (err) {
+        console.warn('Error al verificar sesión:', err);
+      } finally {
+        if (mounted) setAuthChecking(false);
+      }
+    }
+
+    initAuth();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setUser(session.user);
+        setIsGuestMode(false);
+        loadUserData(session.user);
+      } else {
+        setUser(null);
+      }
+    });
+
+    return () => {
+      mounted = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  // Listener para capturar el evento 'beforeinstallprompt' de la PWA
+  useEffect(() => {
     if (window.matchMedia('(display-mode: standalone)').matches || (navigator as any).standalone) {
       setIsAppInstalled(true);
     }
@@ -107,128 +146,119 @@ export default function App() {
     }
   };
 
-  // Cargar datos de Supabase con fallback a localStorage
-  useEffect(() => {
-    loadSupabaseData();
-  }, []);
-
-  const loadSupabaseData = async () => {
+  // Cargar datos del usuario desde Supabase con aislamiento por user_id
+  const loadUserData = async (currentUser: any) => {
+    if (!currentUser) return;
     setCheckingSupabase(true);
     setSupabaseErrorMsg(null);
+
+    const userStorageKey = `fc_transacciones_${currentUser.id}`;
+    const budgetStorageKey = `fc_ingreso_total_${currentUser.id}`;
+
+    // Cargar caché local del usuario primero si existe
+    const cachedBudget = localStorage.getItem(budgetStorageKey);
+    if (cachedBudget) {
+      setIngresoTotal(Number(cachedBudget));
+    }
+
+    const cachedTrans = localStorage.getItem(userStorageKey);
+    if (cachedTrans) {
+      try {
+        const parsed: Transaccion[] = JSON.parse(cachedTrans);
+        setTransacciones(parsed.filter((t) => !t.estado || t.estado === 'activo'));
+      } catch (e) {
+        console.warn('Error leyendo caché local:', e);
+      }
+    }
+
     try {
-      // 1. Intentar cargar transacciones activas (estado = 'activo' o nulo)
+      // 1. Consultar transacciones activas filtradas por user_id
       let activeTrans: Transaccion[] = [];
       const { data: activeData, error: transError } = await supabase
         .from('transacciones')
         .select('*')
+        .eq('user_id', currentUser.id)
         .or('estado.eq.activo,estado.is.null')
         .order('creado_en', { ascending: false });
 
       if (transError) {
-        // Fallback en caso de que la columna 'estado' aún no esté indexada o creada
+        // Fallback si la columna user_id o estado aún no están presentes en la BD del usuario
         const { data: fallbackData, error: fallbackError } = await supabase
           .from('transacciones')
           .select('*')
           .order('creado_en', { ascending: false });
 
         if (fallbackError) throw fallbackError;
-        activeTrans = (fallbackData || []).filter((t: any) => !t.estado || t.estado === 'activo');
+        activeTrans = (fallbackData || []).filter((t: any) => (!t.user_id || t.user_id === currentUser.id) && (!t.estado || t.estado === 'activo'));
       } else {
         activeTrans = activeData || [];
       }
 
       setTransacciones(activeTrans);
-      localStorage.setItem('fc_transacciones', JSON.stringify(activeTrans));
+      localStorage.setItem(userStorageKey, JSON.stringify(activeTrans));
 
-      // 2. Intentar cargar perfil de ingresos (presupuesto)
+      // 2. Consultar perfil de ingresos aislado por user_id
       try {
         const { data: perfilData, error: perfilError } = await supabase
           .from('perfil_ingresos')
           .select('ingreso_total')
-          .limit(1)
+          .eq('user_id', currentUser.id)
           .maybeSingle();
 
         if (perfilError) {
-          console.warn('Advertencia al consultar perfil_ingresos:', perfilError);
+          console.warn('Advertencia al consultar perfil_ingresos por user_id:', perfilError);
         } else if (perfilData && perfilData.ingreso_total !== undefined) {
-          setIngresoTotal(Number(perfilData.ingreso_total));
-          localStorage.setItem('fc_ingreso_total', perfilData.ingreso_total.toString());
+          const val = Number(perfilData.ingreso_total);
+          setIngresoTotal(val);
+          localStorage.setItem(budgetStorageKey, val.toString());
         } else {
-          // Si no existe registro aún en perfil_ingresos, intentamos inicializar con el presupuesto por defecto (14000)
-          const defaultId = '00000000-0000-0000-0000-000000000000';
-          await supabase.from('perfil_ingresos').upsert({ id: defaultId, ingreso_total: ingresoTotal }, { onConflict: 'id' });
+          // Inicializar perfil para este nuevo usuario
+          await supabase.from('perfil_ingresos').upsert({
+            user_id: currentUser.id,
+            ingreso_total: 14000
+          }, { onConflict: 'user_id' });
+          setIngresoTotal(14000);
+          localStorage.setItem(budgetStorageKey, '14000');
         }
       } catch (perfilErr) {
-        console.warn('No se pudo sincronizar perfil_ingresos, pero transacciones está conectada:', perfilErr);
+        console.warn('No se pudo sincronizar perfil_ingresos:', perfilErr);
       }
 
       setSupabaseConnected(true);
       setSupabaseErrorMsg(null);
-      triggerNotification('☁️ ¡Conectado y sincronizado con Supabase Cloud!');
+      triggerNotification('☁️ Datos sincronizados con tu cuenta');
     } catch (err: any) {
       console.warn('Error al verificar conexión con Supabase:', err);
       setSupabaseConnected(false);
 
       const isFetchError = err?.message?.includes('Failed to fetch') || err?.name === 'TypeError';
-
       if (isFetchError) {
-        setSupabaseErrorMsg(
-          '⚠️ Error de red (Failed to fetch): No se pudo conectar al servidor de Supabase. Razones comunes:\n' +
-          '1. Tu proyecto de Supabase está PAUSADO por inactividad (puedes despausarlo en app.supabase.com).\n' +
-          '2. La URL VITE_SUPABASE_URL no es válida o contiene comillas/espacios.\n' +
-          '3. Un bloqueador de anuncios (AdBlock/Brave Shield) o firewall está bloqueando el dominio supabase.co.'
-        );
+        setSupabaseErrorMsg('⚠️ Error de red: No se pudo conectar con el servidor de Supabase.');
       } else {
-        const msg = err?.message || 'No se pudo conectar a la tabla "transacciones" en Supabase.';
-        const code = err?.code ? ` [Código: ${err.code}]` : '';
-        const details = err?.details ? ` - ${err.details}` : '';
-        const hint = err?.hint ? ` (${err.hint})` : '';
-
-        setSupabaseErrorMsg(
-          `⚠️ Error de Supabase: ${msg}${details}${hint}${code}`
-        );
-      }
-      
-      // Fallback a LocalStorage
-      const savedTrans = localStorage.getItem('fc_transacciones');
-      if (savedTrans) {
-        try {
-          const parsed: Transaccion[] = JSON.parse(savedTrans);
-          const activeOnly = parsed.filter((t) => !t.estado || t.estado === 'activo');
-          setTransacciones(activeOnly);
-        } catch (e) {
-          setTransacciones([]);
-        }
-      } else {
-        // Datos de demostración iniciales
-        const mockData: Transaccion[] = [
-          { id: '1', monto: 12.50, categoria: 'Comida', concepto: 'Café de la mañana', estado: 'activo', creado_en: new Date(Date.now() - 3600000).toISOString() },
-          { id: '2', monto: 45.00, categoria: 'Servicios', concepto: 'Suscripción de streaming', estado: 'activo', creado_en: new Date(Date.now() - 14400000).toISOString() },
-          { id: '3', monto: 15.00, categoria: 'Transporte', concepto: 'Viaje en metro/bus', estado: 'activo', creado_en: new Date(Date.now() - 86400000).toISOString() }
-        ];
-        setTransacciones(mockData);
-        localStorage.setItem('fc_transacciones', JSON.stringify(mockData));
+        setSupabaseErrorMsg(`⚠️ Aviso de Supabase: ${err?.message || 'Revisa la configuración de tablas y RLS'}`);
       }
     } finally {
       setCheckingSupabase(false);
     }
   };
 
-  // Cargar historial de gastos archivados
+  // Cargar historial de gastos archivados del usuario
   const loadArchivadoData = async () => {
     setLoadingArchivados(true);
     try {
-      if (supabaseConnected) {
+      if (supabaseConnected && user?.id) {
         const { data, error } = await supabase
           .from('transacciones')
           .select('*')
+          .eq('user_id', user.id)
           .eq('estado', 'archivado')
           .order('creado_en', { ascending: false });
 
         if (error) throw error;
         setTransaccionesArchivadas(data || []);
       } else {
-        const savedTrans = localStorage.getItem('fc_transacciones');
+        const userStorageKey = user?.id ? `fc_transacciones_${user.id}` : 'fc_transacciones';
+        const savedTrans = localStorage.getItem(userStorageKey);
         if (savedTrans) {
           const parsed: Transaccion[] = JSON.parse(savedTrans);
           setTransaccionesArchivadas(parsed.filter((t) => t.estado === 'archivado'));
@@ -238,56 +268,20 @@ export default function App() {
       }
     } catch (err) {
       console.error('Error cargando historial archivado:', err);
-      const savedTrans = localStorage.getItem('fc_transacciones');
-      if (savedTrans) {
-        try {
-          const parsed: Transaccion[] = JSON.parse(savedTrans);
-          setTransaccionesArchivadas(parsed.filter((t) => t.estado === 'archivado'));
-        } catch (e) {
-          setTransaccionesArchivadas([]);
-        }
-      }
     } finally {
       setLoadingArchivados(false);
     }
   };
 
-  // Sincronizar cambios locales cuando no estamos en Supabase
-  useEffect(() => {
-    if (!supabaseConnected) {
-      localStorage.setItem('fc_ingreso_total', ingresoTotal.toString());
-    }
-  }, [ingresoTotal, supabaseConnected]);
-
-  useEffect(() => {
-    if (!supabaseConnected && transacciones.length > 0) {
-      localStorage.setItem('fc_transacciones', JSON.stringify(transacciones));
-    }
-  }, [transacciones, supabaseConnected]);
-
-  // Estados del formulario y UI
-  const [monto, setMonto] = useState<string>('');
-  const [categoria, setCategoria] = useState<'Comida' | 'Transporte' | 'Servicios' | 'Varios'>('Comida');
-  const [concepto, setConcepto] = useState<string>('');
-  const [isEditingIngreso, setIsEditingIngreso] = useState<boolean>(false);
-  const [tempIngreso, setTempIngreso] = useState<string>('');
-  const [showNotification, setShowNotification] = useState<string | null>(null);
-
   // Categorías rápidas para completar en 1 segundo
-  const sugerenciasRapidas: Record<string, string[]> = {
+  const sugerenciasRapidas: Record<CategoriaType, string[]> = {
     Comida: ['Almuerzo', 'Café', 'Cena', 'Supermercado', 'Snack'],
     Transporte: ['Uber/Didi', 'Gasolina', 'Metro/Bus', 'Estacionamiento', 'Peaje'],
     Servicios: ['Luz/Agua', 'Internet', 'Celular', 'Netflix/Spotify', 'Gimnasio'],
     Varios: ['Ropa', 'Regalo', 'Farmacia', 'Cine', 'Otros']
   };
 
-  // Disparar notificaciones flotantes de feedback
-  const triggerNotification = (message: string) => {
-    setShowNotification(message);
-    setTimeout(() => setShowNotification(null), 3500);
-  };
-
-  // Registrar un gasto rápido
+  // Registrar un gasto rápido (con user_id)
   const handleAddGasto = async (e: React.FormEvent) => {
     e.preventDefault();
     const valMonto = Number(monto);
@@ -297,7 +291,7 @@ export default function App() {
     }
 
     const conceptoLimpio = concepto.trim() || `Gasto en ${categoria}`;
-    const nuevoGastoConEstado = {
+    const nuevoGastoConUser: any = {
       monto: valMonto,
       categoria,
       concepto: conceptoLimpio,
@@ -305,27 +299,27 @@ export default function App() {
       estado: 'activo'
     };
 
+    if (user?.id) {
+      nuevoGastoConUser.user_id = user.id;
+    }
+
     if (supabaseConnected) {
       try {
-        // Intentar inserción con todas las columnas (incluyendo tipo y estado)
         let { data, error } = await supabase
           .from('transacciones')
-          .insert([nuevoGastoConEstado])
+          .insert([nuevoGastoConUser])
           .select();
 
-        // Si falla por columna 'estado' o 'tipo' no existente en la tabla de Supabase del usuario, reintentamos con la estructura básica
-        if (error && (error.message?.includes('estado') || error.message?.includes('tipo') || error.message?.includes('schema cache') || error.code === 'PGRST204' || error.code === '42703')) {
-          console.warn('Columna estado/tipo no encontrada en Supabase, reintentando inserción básica...');
-          const gastoBasico = {
+        // Fallback por si la columna 'user_id' o 'estado' no existe en la tabla previa
+        if (error && (error.message?.includes('user_id') || error.message?.includes('estado') || error.code === 'PGRST204' || error.code === '42703')) {
+          console.warn('Reintentando inserción sin columnas opcionales...');
+          const gastoBasico: any = {
             monto: valMonto,
             categoria,
             concepto: conceptoLimpio
           };
-          const retryRes = await supabase
-            .from('transacciones')
-            .insert([gastoBasico])
-            .select();
-
+          if (user?.id) gastoBasico.user_id = user.id;
+          const retryRes = await supabase.from('transacciones').insert([gastoBasico]).select();
           data = retryRes.data;
           error = retryRes.error;
         }
@@ -338,23 +332,22 @@ export default function App() {
             estado: data[0].estado || 'activo'
           };
           setTransacciones((prev) => [itemInsertado, ...prev]);
-          triggerNotification('⚡ Gasto guardado en Supabase Cloud!');
+          
+          // Actualizar caché local
+          const userStorageKey = user?.id ? `fc_transacciones_${user.id}` : 'fc_transacciones';
+          const updated = [itemInsertado, ...transacciones];
+          localStorage.setItem(userStorageKey, JSON.stringify(updated));
+          
+          triggerNotification('⚡ Gasto guardado en tu cuenta!');
         } else {
-          loadSupabaseData();
+          loadUserData(user);
         }
       } catch (err: any) {
-        console.error('Error insertando en Supabase, guardando local...', err);
-        const errMsg = err?.message || 'Error de conexión o permisos RLS';
-        const errDetails = err?.details ? ` (${err.details})` : '';
-        const errCode = err?.code ? ` [Código: ${err.code}]` : '';
-        const detailMsg = `${errMsg}${errDetails}${errCode}`;
-
-        triggerNotification(`⚠️ Error Supabase. Guardado local.`);
-        alert(`⚠️ Error de Conexión o Permisos en Supabase:\n\n${detailMsg}\n\nSi aún no has agregado la columna 'estado' en Supabase, puedes ejecutar esta línea en el Editor SQL:\nALTER TABLE transacciones ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'activo';`);
-
-        // Guardado local fallback
+        console.error('Error insertando en Supabase:', err);
+        triggerNotification('⚠️ Guardado en caché local');
         const localTx: Transaccion = {
           id: crypto.randomUUID(),
+          user_id: user?.id,
           monto: valMonto,
           categoria,
           concepto: conceptoLimpio,
@@ -364,9 +357,10 @@ export default function App() {
         setTransacciones((prev) => [localTx, ...prev]);
       }
     } else {
-      // Local Only
+      // Local / Offline
       const localTx: Transaccion = {
         id: crypto.randomUUID(),
+        user_id: user?.id,
         monto: valMonto,
         categoria,
         concepto: conceptoLimpio,
@@ -374,7 +368,9 @@ export default function App() {
         creado_en: new Date().toISOString()
       };
       setTransacciones((prev) => [localTx, ...prev]);
-      triggerNotification('⚡ Gasto guardado localmente (Simulado)');
+      const userStorageKey = user?.id ? `fc_transacciones_${user.id}` : 'fc_transacciones';
+      localStorage.setItem(userStorageKey, JSON.stringify([localTx, ...transacciones]));
+      triggerNotification('⚡ Gasto registrado localmente');
     }
 
     setMonto('');
@@ -390,7 +386,7 @@ export default function App() {
     return stringified;
   };
 
-  // Función para generar y descargar reporte CSV del ciclo
+  // Generar y descargar reporte CSV del ciclo
   const generarYDescargarReporteCSV = (items: Transaccion[]) => {
     const now = new Date();
     const year = now.getFullYear();
@@ -400,7 +396,7 @@ export default function App() {
     const headers = ['Fecha y Hora', 'Categoría', 'Concepto / Nota', 'Monto en Bs', 'Estado'];
     
     const rows = items.map((t) => {
-      const info = infoCategorias[t.categoria as keyof typeof infoCategorias] || { icon: '💰' };
+      const info = infoCategorias[t.categoria] || { icon: '💰' };
       const catConEmoji = `${info.icon} ${t.categoria}`;
       const fechaFormatted = new Date(t.creado_en).toLocaleString('es-BO', {
         year: 'numeric',
@@ -442,75 +438,71 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  // Ejecutar el Cierre de Ciclo
+  // Cierre de Ciclo
   const handleCerrarCiclo = async () => {
     setIsClosingCycle(true);
     try {
-      // Capturar transacciones del ciclo actual para el reporte CSV
       const transaccionesCiclo = [...transacciones];
 
-      // 1. Disparar la descarga automática del archivo .csv en el dispositivo
+      // 1. Descargar archivo .csv
       try {
         generarYDescargarReporteCSV(transaccionesCiclo);
       } catch (csvErr) {
         console.error('Error al generar el reporte CSV:', csvErr);
       }
 
-      if (supabaseConnected) {
-        // 2. Actualizar transacciones activas a estado 'archivado' en Supabase
+      if (supabaseConnected && user?.id) {
+        // 2. Actualizar estado a 'archivado' en Supabase solo para este user_id
         const activeIds = transaccionesCiclo.map((t) => t.id);
         if (activeIds.length > 0) {
           try {
-            const { error: updateErr } = await supabase
+            await supabase
               .from('transacciones')
               .update({ estado: 'archivado' })
+              .eq('user_id', user.id)
               .in('id', activeIds);
-
-            if (updateErr) {
-              console.warn('No se pudo actualizar estado en Supabase, reintentando por filtro:', updateErr);
-              await supabase
-                .from('transacciones')
-                .update({ estado: 'archivado' })
-                .or('estado.eq.activo,estado.is.null');
-            }
           } catch (e) {
-            console.warn('Excepción al actualizar estado en Supabase:', e);
+            console.warn('Error al archivar en Supabase:', e);
           }
         }
 
-        // 3. Reiniciar perfil de ingresos a 14,000.00 Bs en Supabase
+        // 3. Reiniciar perfil de ingresos a 14,000.00 Bs
         try {
-          const defaultId = '00000000-0000-0000-0000-000000000000';
           await supabase
             .from('perfil_ingresos')
-            .upsert({ id: defaultId, ingreso_total: 14000, updated_at: new Date().toISOString() });
+            .upsert({ 
+              user_id: user.id, 
+              ingreso_total: 14000, 
+              updated_at: new Date().toISOString() 
+            }, { onConflict: 'user_id' });
         } catch (e) {
-          console.warn('Error al actualizar perfil_ingresos en Supabase:', e);
+          console.warn('Error al actualizar perfil_ingresos:', e);
         }
       }
 
-      // 4. Actualizar almacenamiento local
-      const savedTrans = localStorage.getItem('fc_transacciones');
+      // 4. Actualizar almacenamiento local aislado
+      const userStorageKey = user?.id ? `fc_transacciones_${user.id}` : 'fc_transacciones';
+      const budgetStorageKey = user?.id ? `fc_ingreso_total_${user.id}` : 'fc_ingreso_total';
+
+      const savedTrans = localStorage.getItem(userStorageKey);
       if (savedTrans) {
         try {
           const parsed: Transaccion[] = JSON.parse(savedTrans);
           const updated = parsed.map((t) => ({ ...t, estado: 'archivado' }));
-          localStorage.setItem('fc_transacciones', JSON.stringify(updated));
+          localStorage.setItem(userStorageKey, JSON.stringify(updated));
         } catch (e) {
-          localStorage.setItem('fc_transacciones', JSON.stringify([]));
+          localStorage.setItem(userStorageKey, JSON.stringify([]));
         }
       }
 
-      // 5. Reiniciar vista principal (gastos a 0 y saldo a 14,000 Bs)
+      // 5. Reiniciar vista principal
       setTransacciones([]);
       setIngresoTotal(14000);
-      localStorage.setItem('fc_ingreso_total', '14000');
+      localStorage.setItem(budgetStorageKey, '14000');
 
-      // 6. Notificación requerida
       triggerNotification('¡Ciclo cerrado con éxito! Se descargó el reporte del mes.');
       setShowConfirmCerrarCiclo(false);
 
-      // Si la pestaña de archivados está abierta, recargar los datos archivados
       if (showHistorialArchivado) {
         loadArchivadoData();
       }
@@ -526,14 +518,14 @@ export default function App() {
   const handleDeleteGasto = async (id: string) => {
     if (supabaseConnected) {
       try {
-        const { error } = await supabase
-          .from('transacciones')
-          .delete()
-          .eq('id', id);
-
+        let deleteQuery = supabase.from('transacciones').delete().eq('id', id);
+        if (user?.id) {
+          deleteQuery = deleteQuery.eq('user_id', user.id);
+        }
+        const { error } = await deleteQuery;
         if (error) throw error;
         setTransacciones((prev) => prev.filter((t) => t.id !== id));
-        triggerNotification('🗑️ Transacción eliminada de Supabase');
+        triggerNotification('🗑️ Transacción eliminada');
       } catch (err) {
         console.error('Error eliminando de Supabase:', err);
         setTransacciones((prev) => prev.filter((t) => t.id !== id));
@@ -554,30 +546,52 @@ export default function App() {
       return;
     }
 
-    if (supabaseConnected) {
+    const budgetStorageKey = user?.id ? `fc_ingreso_total_${user.id}` : 'fc_ingreso_total';
+
+    if (supabaseConnected && user?.id) {
       try {
-        const defaultId = '00000000-0000-0000-0000-000000000000';
         const { error } = await supabase
           .from('perfil_ingresos')
-          .upsert({ id: defaultId, ingreso_total: valIngreso, updated_at: new Date().toISOString() });
+          .upsert({ 
+            user_id: user.id, 
+            ingreso_total: valIngreso, 
+            updated_at: new Date().toISOString() 
+          }, { onConflict: 'user_id' });
 
         if (error) throw error;
         setIngresoTotal(valIngreso);
+        localStorage.setItem(budgetStorageKey, valIngreso.toString());
         setIsEditingIngreso(false);
-        triggerNotification('💼 Presupuesto subido a Supabase Cloud!');
+        triggerNotification('💼 Presupuesto sincronizado');
       } catch (err) {
         console.error('Error al subir presupuesto:', err);
         setIngresoTotal(valIngreso);
+        localStorage.setItem(budgetStorageKey, valIngreso.toString());
         setIsEditingIngreso(false);
-        triggerNotification('⚠️ Guardado localmente (Error Cloud)');
+        triggerNotification('💼 Presupuesto guardado local');
       }
     } else {
       setIngresoTotal(valIngreso);
+      localStorage.setItem(budgetStorageKey, valIngreso.toString());
       setIsEditingIngreso(false);
-      triggerNotification('💼 Presupuesto actualizado localmente');
+      triggerNotification('💼 Presupuesto actualizado');
     }
   };
 
+  // Cerrar Sesión
+  const handleSignOut = async () => {
+    try {
+      await supabase.auth.signOut();
+      setUser(null);
+      setIsGuestMode(false);
+      setTransacciones([]);
+      setTransaccionesArchivadas([]);
+      triggerNotification('👋 Sesión cerrada exitosamente');
+    } catch (err) {
+      console.error('Error cerrando sesión:', err);
+      setUser(null);
+    }
+  };
 
   // Cálculos financieros
   const totalGastos = transacciones.reduce((acc, curr) => acc + curr.monto, 0);
@@ -585,12 +599,46 @@ export default function App() {
   const porcentajeGastado = ingresoTotal > 0 ? (totalGastos / ingresoTotal) * 100 : 0;
 
   // Iconos y colores por categoría
-  const infoCategorias = {
+  const infoCategorias: Record<CategoriaType, { icon: string; color: string; bg: string }> = {
     Comida: { icon: '🍔', color: 'orange', bg: 'bg-amber-500/10 text-amber-400 border-amber-500/25' },
     Transporte: { icon: '🚗', color: 'blue', bg: 'bg-sky-500/10 text-sky-400 border-sky-500/25' },
     Servicios: { icon: '💡', color: 'purple', bg: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/25' },
     Varios: { icon: '🛍️', color: 'pink', bg: 'bg-rose-500/10 text-rose-400 border-rose-500/25' }
   };
+
+  // 1. Pantalla de Carga Inicial
+  if (authChecking) {
+    return (
+      <div className="min-h-screen bg-[#0F172A] text-slate-200 flex flex-col items-center justify-center p-4">
+        <div className="w-12 h-12 rounded-2xl bg-emerald-500 flex items-center justify-center text-slate-950 shadow-lg shadow-emerald-500/20 mb-3 animate-pulse">
+          <Wallet className="h-6 w-6" />
+        </div>
+        <p className="text-xs font-mono text-slate-400">Cargando FinanzasClaras...</p>
+      </div>
+    );
+  }
+
+  // 2. Pantalla de Login / Registro si no hay usuario autenticado y no está en modo invitado
+  if (!user && !isGuestMode) {
+    return (
+      <AuthScreen 
+        onAuthSuccess={() => {
+          // onAuthStateChange se encarga de disparar loadUserData
+        }}
+        onContinueAsGuest={() => {
+          setIsGuestMode(true);
+          const savedTrans = localStorage.getItem('fc_transacciones');
+          if (savedTrans) {
+            try {
+              setTransacciones(JSON.parse(savedTrans));
+            } catch (e) {
+              setTransacciones([]);
+            }
+          }
+        }}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#0F172A] text-[#f3f4f6] flex flex-col items-center justify-start relative overflow-x-hidden selection:bg-emerald-500 selection:text-slate-950">
@@ -614,26 +662,65 @@ export default function App() {
       </AnimatePresence>
 
       {/* CONTENEDOR PRINCIPAL FLUIDO NATIVO */}
-      <main className="w-full max-w-md mx-auto px-4 py-4 sm:py-6 flex flex-col gap-5 relative z-10 pt-[env(safe-area-inset-top,1rem)] pb-[env(safe-area-inset-bottom,1.5rem)]">
+      <main className="w-full max-w-md mx-auto px-4 py-4 sm:py-6 flex flex-col gap-4 relative z-10 pt-[env(safe-area-inset-top,1rem)] pb-[env(safe-area-inset-bottom,1.5rem)]">
         
-        {/* Header de la Aplicación */}
+        {/* Header de la Aplicación con Usuario y Cerrar Sesión */}
         <header className="flex justify-between items-center py-1">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-xl bg-emerald-500 flex items-center justify-center text-slate-950 shadow-md shadow-emerald-500/10">
               <Wallet className="h-4 w-4" />
             </div>
-            <h1 className="text-lg font-extrabold text-white tracking-tight">FinanzasClaras</h1>
+            <div className="flex flex-col text-left">
+              <h1 className="text-base font-extrabold text-white tracking-tight leading-tight">FinanzasClaras</h1>
+              <span className="text-[9px] text-slate-400 truncate max-w-[140px]">
+                {user?.email || (isGuestMode ? 'Modo Local' : 'Usuario')}
+              </span>
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={loadSupabaseData}
-            disabled={checkingSupabase}
-            className={`text-[10px] bg-slate-900 border px-2.5 py-1 rounded-full font-mono font-medium flex items-center gap-1.5 transition-all hover:bg-slate-800 cursor-pointer ${supabaseConnected ? 'text-emerald-400 border-emerald-500/25' : 'text-amber-400 border-amber-500/25 animate-pulse'}`}
-            title="Haz clic para verificar o reintentar la conexión con Supabase"
-          >
-            <RefreshCw className={`h-3 w-3 ${checkingSupabase ? 'animate-spin' : ''}`} />
-            <span>● {checkingSupabase ? 'Verificando...' : supabaseConnected ? 'Supabase' : 'Modo Demo'}</span>
-          </button>
+
+          <div className="flex items-center gap-1.5">
+            {/* Botón SQL RLS Helper */}
+            <button
+              type="button"
+              onClick={() => setShowSqlModal(true)}
+              className="p-1.5 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-xl text-slate-400 hover:text-emerald-400 transition-all cursor-pointer"
+              title="Ver configuración SQL / RLS"
+            >
+              <Shield className="h-3.5 w-3.5" />
+            </button>
+
+            {/* Estado de sincronización */}
+            <button
+              type="button"
+              onClick={() => loadUserData(user)}
+              disabled={checkingSupabase}
+              className={`text-[10px] bg-slate-900 border px-2.5 py-1 rounded-xl font-mono font-medium flex items-center gap-1.5 transition-all hover:bg-slate-800 cursor-pointer ${supabaseConnected ? 'text-emerald-400 border-emerald-500/25' : 'text-amber-400 border-amber-500/25'}`}
+              title="Sincronizar datos"
+            >
+              <RefreshCw className={`h-3 w-3 ${checkingSupabase ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">{checkingSupabase ? 'Sincronizando' : supabaseConnected ? 'Nube' : 'Local'}</span>
+            </button>
+
+            {/* Botón Cerrar Sesión */}
+            {user ? (
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="p-1.5 bg-slate-900 border border-slate-800 hover:border-rose-500/40 text-slate-400 hover:text-rose-400 rounded-xl transition-all cursor-pointer"
+                title="Cerrar Sesión"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setIsGuestMode(false)}
+                className="px-2.5 py-1 bg-emerald-500 text-slate-950 text-[10px] font-bold rounded-xl cursor-pointer"
+              >
+                Login
+              </button>
+            )}
+          </div>
         </header>
 
         {/* BANNER / BOTÓN DE INSTALACIÓN DIRECTA PWA */}
@@ -672,17 +759,21 @@ export default function App() {
           >
             <p className="font-semibold whitespace-pre-line">{supabaseErrorMsg}</p>
             <div className="flex items-center justify-between pt-1.5 border-t border-amber-500/15 gap-2">
-              <span className="text-[9px] text-slate-400">
-                Si ya ejecutaste el SQL en Supabase, haz clic para verificar:
-              </span>
               <button
                 type="button"
-                onClick={loadSupabaseData}
+                onClick={() => setShowSqlModal(true)}
+                className="text-[9px] text-emerald-400 underline font-semibold"
+              >
+                Ver script SQL con RLS
+              </button>
+              <button
+                type="button"
+                onClick={() => loadUserData(user)}
                 disabled={checkingSupabase}
                 className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-bold rounded-lg text-[10px] flex items-center gap-1 transition-all cursor-pointer border border-amber-500/30 shrink-0"
               >
                 <RefreshCw className={`h-3 w-3 ${checkingSupabase ? 'animate-spin' : ''}`} />
-                <span>Probar Conexión</span>
+                <span>Reintentar</span>
               </button>
             </div>
           </motion.div>
@@ -693,7 +784,7 @@ export default function App() {
           <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full blur-2xl pointer-events-none"></div>
 
           <div className="flex justify-between items-start mb-3">
-            <div>
+            <div className="text-left">
               <p className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">Saldo Disponible</p>
               <h2 className={`text-2xl sm:text-3xl font-mono font-bold tracking-tight mt-0.5 ${saldoDisponible >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                 Bs {saldoDisponible.toLocaleString('es-BO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -798,7 +889,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Botones de Categorías Grandes */}
+            {/* Botones de Categorías */}
             <div>
               <div className="grid grid-cols-4 gap-1.5">
                 {(['Comida', 'Transporte', 'Servicios', 'Varios'] as const).map((cat) => (
@@ -822,7 +913,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Concepto Opcional con sugerencias inteligentes */}
+            {/* Concepto Opcional con sugerencias */}
             <div>
               <input
                 type="text"
@@ -832,7 +923,7 @@ export default function App() {
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 px-3 text-xs focus:outline-none focus:border-emerald-500 text-white placeholder-slate-700 transition-all"
               />
               
-              {/* Tags Recomendados de Autocompletado */}
+              {/* Tags de Autocompletado */}
               <div className="flex flex-wrap gap-1 mt-2">
                 {sugerenciasRapidas[categoria].map((sug) => (
                   <button
@@ -926,7 +1017,7 @@ export default function App() {
                 </AnimatePresence>
               </div>
 
-              {/* Botón "🔒 Cerrar Ciclo" al final del historial de gastos actual */}
+              {/* Botón Cerrar Ciclo */}
               <button
                 type="button"
                 onClick={() => setShowConfirmCerrarCiclo(true)}
@@ -939,7 +1030,7 @@ export default function App() {
           )}
         </div>
 
-        {/* 4. SECCIÓN / PESTAÑA: HISTORIAL DE GASTOS ARCHIVADOS */}
+        {/* 4. HISTORIAL DE GASTOS ARCHIVADOS */}
         <div className="flex flex-col gap-2 pt-2 border-t border-slate-800/60 text-left">
           <button
             type="button"
@@ -1068,6 +1159,12 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* MODAL INSTRUCCIONES SQL Y RLS */}
+      <SqlInstructionsModal
+        isOpen={showSqlModal}
+        onClose={() => setShowSqlModal(false)}
+      />
 
     </div>
   );
