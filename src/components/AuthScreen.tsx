@@ -58,12 +58,20 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
 
         if (error) throw error;
 
+        setSuccessMessage('¡Registro exitoso! Iniciando sesión automáticamente...');
+
         if (data.session) {
-          setSuccessMessage('¡Cuenta creada e iniciada con éxito!');
           onAuthSuccess();
-        } else if (data.user && !data.session) {
-          // Caso en que el proyecto Supabase tenga activado "Confirm email"
-          setSuccessMessage('¡Registro completado! Revisa tu bandeja de entrada si tu proyecto requiere confirmación por correo.');
+        } else if (data.user) {
+          // Si signUp no devolvió la sesión directamente, iniciamos sesión de inmediato
+          const { error: signInError } = await supabase.auth.signInWithPassword({
+            email: cleanEmail,
+            password,
+          });
+          if (signInError) {
+            console.warn('Advertencia al autoiniciar sesión tras registro:', signInError);
+          }
+          onAuthSuccess();
         } else {
           onAuthSuccess();
         }
