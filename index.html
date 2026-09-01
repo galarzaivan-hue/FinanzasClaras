@@ -5,6 +5,32 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>FinanzasClaras - Gestor de Gastos</title>
     
+    <!-- Extension Guard for Ethereum Wallet Injections -->
+    <script>
+      (function() {
+        try {
+          let _eth;
+          if (!('ethereum' in window)) {
+            Object.defineProperty(window, 'ethereum', {
+              get: function() { return _eth; },
+              set: function(val) { _eth = val; },
+              configurable: true,
+              enumerable: true
+            });
+          }
+        } catch (e) {
+          // Ignore
+        }
+        window.addEventListener('error', function(event) {
+          if (event && event.message && (event.message.indexOf('ethereum') !== -1 || event.message.indexOf('Cannot redefine property') !== -1)) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return true;
+          }
+        }, true);
+      })();
+    </script>
+    
     <!-- PWA Primary Meta Tags -->
     <meta name="theme-color" content="#10B981" />
     <meta name="description" content="FinanzasClaras - Gestor de Gastos y Presupuesto Personal" />
