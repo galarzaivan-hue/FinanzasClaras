@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Wallet, Mail, Lock, LogIn, UserPlus, AlertCircle, ArrowRight, ShieldCheck, CheckCircle2 } from 'lucide-react';
+import { Wallet, Mail, Lock, LogIn, UserPlus, AlertCircle, ArrowRight, ShieldCheck } from 'lucide-react';
 import { supabase } from '../lib/supabaseClient';
 
 interface AuthScreenProps {
@@ -14,12 +14,10 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
   const [password, setPassword] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
-    setSuccessMessage(null);
     setLoading(true);
 
     const cleanEmail = email.trim();
@@ -45,12 +43,11 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
 
         if (error) throw error;
 
-        if (data.session) {
-          setSuccessMessage('¡Inicio de sesión exitoso! Accediendo...');
+        if (data?.session || data?.user) {
           onAuthSuccess();
         }
       } else {
-        // Registro de Nuevo Usuario con Email y Contraseña
+        // Registro de Nuevo Usuario con Email y Contraseña (Directo e Inmediato)
         const { data, error } = await supabase.auth.signUp({
           email: cleanEmail,
           password,
@@ -58,40 +55,54 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
 
         if (error) throw error;
 
-        setSuccessMessage('¡Registro exitoso! Iniciando sesión automáticamente...');
-
-        if (data.session) {
+        // Si signUp devolvió la sesión activa inmediatamente:
+        if (data?.session) {
           onAuthSuccess();
-        } else if (data.user) {
-          // Si signUp no devolvió la sesión directamente, iniciamos sesión de inmediato
-          const { error: signInError } = await supabase.auth.signInWithPassword({
+        } else {
+          // Si no devuelve la sesión automáticamente, forzar inicio de sesión transparente a nivel de código
+          const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
             email: cleanEmail,
             password,
           });
+
           if (signInError) {
-            console.warn('Advertencia al autoiniciar sesión tras registro:', signInError);
+            throw signInError;
           }
-          onAuthSuccess();
-        } else {
-          onAuthSuccess();
+
+          if (signInData?.session || signInData?.user) {
+            onAuthSuccess();
+          } else {
+            onAuthSuccess();
+          }
         }
       }
     } catch (err: any) {
       console.error('Error en autenticación:', err);
       let message = err?.message || 'Ocurrió un error al procesar tu solicitud.';
-      
-      if (message.includes('Invalid login credentials')) {
-        message = 'Correo o contraseña incorrectos. Verifica tus datos o regístrate si aún no tienes cuenta.';
-      } else if (message.includes('User already registered')) {
-        message = 'Este correo electrónico ya está registrado. Selecciona "Iniciar Sesión".';
-      } else if (message.includes('Email not confirmed')) {
-        message = 'Correo no confirmado. Revisa tu bandeja de entrada o desactiva la opción "Confirm email" en Supabase Auth.';
-      } else if (message.includes('Password should be at least')) {
+      const lower = message.toLowerCase();
+
+      if (
+        lower.includes('user already registered') ||
+        lower.includes('already registered') ||
+        lower.includes('already exists') ||
+        lower.includes('user with this email already exists')
+      ) {
+        message = 'Este correo ya está registrado. Por favor inicia sesión.';
+        setIsLogin(true); // Cambia automáticamente a la pestaña de inicio de sesión
+      } else if (
+        lower.includes('invalid login credentials') ||
+        lower.includes('invalid credentials') ||
+        lower.includes('invalid email or password')
+      ) {
+        message = 'Correo o contraseña incorrectos. Verifica tus datos.';
+      } else if (lower.includes('password should be at least') || lower.includes('password is too short')) {
         message = 'La contraseña debe tener al menos 6 caracteres.';
-      } else if (message.includes('signup disabled')) {
-        message = 'El registro de usuarios está deshabilitado temporalmente en Supabase.';
+      } else if (lower.includes('signup disabled')) {
+        message = 'El registro de usuarios está deshabilitado en este momento.';
+      } else if (lower.includes('email not confirmed')) {
+        message = 'Credenciales no válidas. Verifica tus datos de acceso.';
       }
-      
+
       setErrorMessage(message);
     } finally {
       setLoading(false);
@@ -128,7 +139,6 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
             onClick={() => {
               setIsLogin(true);
               setErrorMessage(null);
-              setSuccessMessage(null);
             }}
             className={`py-2 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
               isLogin
@@ -144,7 +154,6 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
             onClick={() => {
               setIsLogin(false);
               setErrorMessage(null);
-              setSuccessMessage(null);
             }}
             className={`py-2 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
               !isLogin
@@ -166,18 +175,6 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
           >
             <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
             <span className="leading-tight">{errorMessage}</span>
-          </motion.div>
-        )}
-
-        {/* Mensajes de Éxito */}
-        {successMessage && (
-          <motion.div
-            initial={{ opacity: 0, y: -6 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mb-4 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs flex items-start gap-2"
-          >
-            <CheckCircle2 className="h-4 w-4 shrink-0 mt-0.5" />
-            <span className="leading-tight">{successMessage}</span>
           </motion.div>
         )}
 
@@ -214,7 +211,7 @@ export default function AuthScreen({ onAuthSuccess, onContinueAsGuest }: AuthScr
                 placeholder="Mínimo 6 caracteres"
                 required
                 minLength={6}
-                autoComplete={isLogin ? "current-password" : "new-password"}
+                autoComplete={isLogin ? 'current-password' : 'new-password'}
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2.5 pl-9 pr-3 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 transition-colors"
               />
             </div>
